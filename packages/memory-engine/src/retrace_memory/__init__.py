@@ -32,12 +32,26 @@ from retrace_memory.ollama import (
     OllamaTimeoutError,
     OllamaUnavailableError,
 )
+from retrace_memory.persistence import (
+    DatabaseError,
+    DuplicateRecordError,
+    InvalidExtractionError,
+    MemoryConnection,
+    MemoryStore,
+    MissingMemoryError,
+    StoreError,
+    TimelineEntry,
+    TimelineResult,
+    UnsupportedSchemaVersionError,
+)
 
 __version__ = "0.1.0"
 
 __all__ = [
     "Certainty",
     "Claim",
+    "DatabaseError",
+    "DuplicateRecordError",
     "ExtractionDiagnostic",
     "ExtractionError",
     "ExtractionResult",
@@ -47,9 +61,13 @@ __all__ = [
     "Event",
     "EventStatus",
     "InformationOrigin",
+    "InvalidExtractionError",
     "Memory",
+    "MemoryConnection",
     "MemoryExtractor",
     "MemorySourceType",
+    "MemoryStore",
+    "MissingMemoryError",
     "OllamaClient",
     "OllamaConfig",
     "OllamaConfigurationError",
@@ -59,7 +77,11 @@ __all__ = [
     "OllamaUnavailableError",
     "Relationship",
     "SourceReference",
+    "StoreError",
     "TemporalContext",
     "TemporalPrecision",
+    "TimelineEntry",
+    "TimelineResult",
+    "UnsupportedSchemaVersionError",
     "validate_source_reference",
 ]

@@ -8,8 +8,9 @@ tool.
 
 This repository currently implements a minimal FastAPI service, an importable
 memory-engine package, a local Ollama-backed extraction pipeline, and development
-tooling. Persistence, a frontend, the Flutter app, and the local companion service
-are planned but not implemented.
+tooling. The memory engine also includes local SQLite persistence and deterministic
+memory linking. A frontend, the Flutter app, and the local companion service are
+planned but not implemented.
 
 ## Monorepo structure
 
@@ -81,3 +82,6 @@ under the user's control. AI-generated claims and events retain exact supporting
 evidence and remain reviewable by the user. See
 [Local AI memory extraction](docs/local-ai-extraction.md) for Ollama setup, the demo,
 privacy boundaries, and limitations.
+
+See [SQLite persistence and memory linking](docs/persistence.md) for the local schema,
+repository API, evidence validation, reprocessing semantics, and persistence demo.
