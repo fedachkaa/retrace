@@ -1,6 +1,7 @@
 import os
 import sys
 from dataclasses import dataclass
+from math import isfinite
 from urllib.parse import urlparse
 
 import httpx
@@ -35,6 +36,12 @@ class OllamaConfig:
 
     def __post_init__(self) -> None:
         parsed = urlparse(self.base_url)
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise OllamaConfigurationError(
+                "Ollama base URL has an invalid port"
+            ) from error
         if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
             "127.0.0.1",
             "localhost",
@@ -43,10 +50,25 @@ class OllamaConfig:
             raise OllamaConfigurationError(
                 "Ollama base URL must use HTTP or HTTPS on a loopback host"
             )
+        if parsed.username is not None or parsed.password is not None:
+            raise OllamaConfigurationError("Ollama base URL cannot contain user info")
+        if (
+            parsed.path not in {"", "/"}
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise OllamaConfigurationError(
+                "Ollama base URL cannot contain a path, parameters, query, or fragment"
+            )
+        if port is not None and port == 0:
+            raise OllamaConfigurationError("Ollama base URL has an invalid port")
         if not self.model.strip():
             raise OllamaConfigurationError("Ollama model name must not be empty")
-        if self.timeout_seconds <= 0:
-            raise OllamaConfigurationError("Ollama timeout must be greater than zero")
+        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise OllamaConfigurationError(
+                "Ollama timeout must be a finite number greater than zero"
+            )
 
     @classmethod
     def from_env(cls) -> "OllamaConfig":
@@ -114,6 +136,8 @@ class OllamaClient:
                 base_url=self.config.base_url,
                 timeout=self.config.timeout_seconds,
                 transport=self.transport,
+                trust_env=False,
+                follow_redirects=False,
             ) as client:
                 response = client.post("/api/chat", json=request)
                 response.raise_for_status()

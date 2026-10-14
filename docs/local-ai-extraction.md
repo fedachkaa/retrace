@@ -18,7 +18,11 @@ set RETRACE_OLLAMA_TIMEOUT_SECONDS=60
 
 The endpoint is deliberately restricted to `localhost`, `127.0.0.1`, or `::1`.
 RETRACE will not send memory text to a remote Ollama host. The model name, loopback
-URL, and positive timeout may also be supplied with `OllamaConfig` in Python.
+URL, and finite positive timeout may also be supplied with `OllamaConfig` in Python.
+Base URLs containing user information, paths, parameters, queries, fragments, or
+invalid ports are rejected. Ollama requests ignore HTTP proxy and other HTTPX
+environment settings so local memory content cannot be redirected by environment
+configuration.
 
 Pass memory text on standard input to run the demo without placing personal text in
 command-line arguments:
@@ -75,6 +79,9 @@ no trustworthy occurrence selector.
   model without inventing timestamps.
 - Entity identity is local to one extraction response. Equal names are not merged;
   different local references produce different entities.
+- Extraction response validation is currently all-or-nothing. One structurally invalid
+  entity, claim, event, or nested value causes the entire model response to be rejected;
+  partial parsing of otherwise valid sibling records is not implemented in this phase.
 - RETRACE does not log prompts or memory contents. Ollama is a separate local process,
   so its own logging and retention behavior should be reviewed by the operator.
 - The synchronous adapter is intended for this small local pipeline. Persistence,
