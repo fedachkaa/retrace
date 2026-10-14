@@ -160,7 +160,11 @@ class SourceReference(BaseModel):
 
 
 class TemporalContext(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
 
     precision: TemporalPrecision
     instant: AwareDatetime | None = None

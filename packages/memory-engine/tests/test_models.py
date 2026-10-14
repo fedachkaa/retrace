@@ -425,6 +425,70 @@ def test_temporal_context_accepts_an_explicitly_absent_expression() -> None:
     assert context.expression is None
 
 
+def test_unvalidated_temporal_context_copy_requires_explicit_revalidation() -> None:
+    context = TemporalContext(
+        precision=TemporalPrecision.RELATIVE,
+        expression="next Friday",
+    )
+    invalid_context = context.model_copy(
+        update={"precision": TemporalPrecision.EXACT},
+    )
+
+    with pytest.raises(ValidationError, match="requires an instant"):
+        TemporalContext.model_validate(invalid_context)
+
+
+def test_claim_rejects_an_unvalidated_temporal_context_copy() -> None:
+    source = memory()
+    context = TemporalContext(
+        precision=TemporalPrecision.RELATIVE,
+        expression="next Friday",
+    )
+    invalid_context = context.model_copy(
+        update={"precision": TemporalPrecision.EXACT},
+    )
+
+    with pytest.raises(ValidationError, match="requires an instant"):
+        Claim(
+            statement="Anna might move to Berlin.",
+            evidence=(evidence(source, "might move to Berlin"),),
+            temporal_context=invalid_context,
+            origin=InformationOrigin.AI_INFERRED,
+        )
+
+
+def test_event_rejects_an_unvalidated_temporal_context_copy() -> None:
+    source = memory()
+    context = TemporalContext(
+        precision=TemporalPrecision.RELATIVE,
+        expression="next Friday",
+    )
+    invalid_context = context.model_copy(
+        update={"precision": TemporalPrecision.EXACT},
+    )
+
+    with pytest.raises(ValidationError, match="requires an instant"):
+        Event(
+            title="Anna moves to Berlin",
+            temporal_context=invalid_context,
+            evidence=(evidence(source, "might move to Berlin"),),
+            status=EventStatus.PLANNED,
+            origin=InformationOrigin.AI_INFERRED,
+        )
+
+
+def test_valid_temporal_context_round_trips_through_json() -> None:
+    context = TemporalContext(
+        precision=TemporalPrecision.EXACT,
+        instant=aware_datetime(),
+        expression="2026-10-14 at 12:30 UTC",
+    )
+
+    restored = TemporalContext.model_validate_json(context.model_dump_json())
+
+    assert restored == context
+
+
 @pytest.mark.parametrize(
     ("model", "field", "invalid_value"),
     [
