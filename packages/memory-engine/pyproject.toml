@@ -1,0 +1,10 @@
+[project]
+name = "retrace-memory"
+version = "0.1.0"
+description = "Reusable memory engine for RETRACE"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
