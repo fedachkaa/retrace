@@ -20,9 +20,12 @@ from retrace_memory import (
     ExtractionResult,
     InformationOrigin,
     InvalidExtractionError,
+    InvalidIdentityConfirmationError,
     Memory,
     MemorySourceType,
     MemoryStore,
+    MissingEntityError,
+    MissingIdentityConfirmationError,
     MissingMemoryError,
     SourceReference,
     TemporalContext,
@@ -163,7 +166,7 @@ def test_database_persists_across_close_and_reopen(tmp_path: Path) -> None:
         store.save_extraction(original)
 
     with MemoryStore(database) as reopened:
-        assert reopened.schema_version == 1
+        assert reopened.schema_version == 2
         assert reopened.foreign_keys_enabled
         assert reopened.get_memory(source.id) == source
         assert reopened.get_extraction(source.id) == original
@@ -320,7 +323,239 @@ def test_shared_entity_ids_create_links_but_matching_names_do_not(
         assert connections[0].connected_memory_id == second.id
         assert connections[0].shared_entity_ids == (shared.id,)
         assert connections[0].basis == "shared_entity_id"
+        assert connections[0].explanations[0].basis == "shared_entity_id"
+        assert connections[0].explanations[0].entity_id == shared.id
         assert store.list_connections(third.id) == ()
+
+
+def test_entity_match_candidates_normalize_names_without_asserting_identity(
+    tmp_path: Path,
+) -> None:
+    first = memory(1)
+    second = memory(2)
+    third = memory(3)
+    alex = Entity(
+        id=uid(501),
+        display_name="  Alex   Morgan ",
+        entity_type=EntityType.PERSON,
+    )
+    alias_match = Entity(
+        id=uid(502),
+        display_name="A. Morgan",
+        entity_type=EntityType.PERSON,
+        aliases=("alex morgan",),
+    )
+    incompatible = Entity(
+        id=uid(503),
+        display_name="Alex Morgan",
+        entity_type=EntityType.ORGANIZATION,
+    )
+    different_name = Entity(
+        id=uid(504), display_name="Robin", entity_type=EntityType.PERSON
+    )
+    same_memory_match = Entity(
+        id=uid(505), display_name="alex morgan", entity_type=EntityType.PERSON
+    )
+    fourth = memory(4)
+
+    with MemoryStore(tmp_path / "memory.sqlite3") as store:
+        first_result = extraction(first, entity=alex)
+        store.save_memory(first)
+        store.save_extraction(
+            first_result.model_copy(
+                update={"entities": (*first_result.entities, same_memory_match)}
+            )
+        )
+        for source, entity in (
+            (second, alias_match),
+            (third, incompatible),
+            (fourth, different_name),
+        ):
+            store.save_memory(source)
+            store.save_extraction(extraction(source, entity=entity))
+
+        candidates = store.list_entity_match_candidates(alex.id)
+
+        assert len(candidates) == 1
+        assert candidates[0].candidate_entity_id == alias_match.id
+        assert candidates[0].normalized_names == ("alex morgan",)
+        assert candidates[0].memory_ids == (first.id,)
+        assert candidates[0].candidate_memory_ids == (second.id,)
+        assert store.list_connections(first.id) == ()
+
+
+def test_confirmed_identity_groups_are_transitive_and_link_memories(
+    tmp_path: Path,
+) -> None:
+    sources = (memory(1), memory(2), memory(3))
+    entities = tuple(
+        Entity(
+            id=uid(600 + index),
+            display_name=f"Alex {index}",
+            entity_type=EntityType.PERSON,
+        )
+        for index in range(3)
+    )
+
+    with MemoryStore(tmp_path / "memory.sqlite3") as store:
+        for source, entity in zip(sources, entities, strict=True):
+            store.save_memory(source)
+            store.save_extraction(extraction(source, entity=entity))
+        store.confirm_entity_identity(entities[0].id, entities[1].id)
+        store.confirm_entity_identity(entities[1].id, entities[2].id)
+
+        assert store.get_confirmed_identity_group(entities[0].id) == tuple(
+            sorted(entity.id for entity in entities)
+        )
+        connections = store.list_connections(sources[0].id)
+        assert [connection.connected_memory_id for connection in connections] == [
+            sources[1].id,
+            sources[2].id,
+        ]
+        assert all(
+            connection.basis == "confirmed_identity" for connection in connections
+        )
+        assert connections[1].explanations[0].entity_id == entities[0].id
+        assert connections[1].explanations[0].connected_entity_id == entities[2].id
+
+
+def test_revocation_preserves_alternate_identity_paths(tmp_path: Path) -> None:
+    sources = (memory(1), memory(2), memory(3))
+    entities = tuple(
+        Entity(
+            id=uid(700 + index),
+            display_name="Alex",
+            entity_type=EntityType.PERSON,
+        )
+        for index in range(3)
+    )
+
+    with MemoryStore(tmp_path / "memory.sqlite3") as store:
+        for source, entity in zip(sources, entities, strict=True):
+            store.save_memory(source)
+            store.save_extraction(extraction(source, entity=entity))
+        store.confirm_entity_identity(entities[0].id, entities[1].id)
+        store.confirm_entity_identity(entities[1].id, entities[2].id)
+        store.confirm_entity_identity(entities[0].id, entities[2].id)
+
+        store.revoke_entity_identity(entities[0].id, entities[1].id)
+        assert set(store.get_confirmed_identity_group(entities[0].id)) == {
+            entity.id for entity in entities
+        }
+
+        store.revoke_entity_identity(entities[0].id, entities[2].id)
+        assert store.get_confirmed_identity_group(entities[0].id) == (entities[0].id,)
+        assert store.list_connections(sources[0].id) == ()
+
+
+def test_confirmations_persist_across_reopen_and_candidates_stop_suggesting_them(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "memory.sqlite3"
+    first = memory(1)
+    second = memory(2)
+    first_entity = Entity(
+        id=uid(801), display_name="Alex", entity_type=EntityType.PERSON
+    )
+    second_entity = Entity(
+        id=uid(802), display_name="ALEX", entity_type=EntityType.PERSON
+    )
+    with MemoryStore(database) as store:
+        for source, entity in ((first, first_entity), (second, second_entity)):
+            store.save_memory(source)
+            store.save_extraction(extraction(source, entity=entity))
+        assert store.list_entity_match_candidates(first_entity.id)
+        store.confirm_entity_identity(first_entity.id, second_entity.id)
+
+    with MemoryStore(database) as reopened:
+        assert reopened.schema_version == 2
+        assert reopened.list_entity_match_candidates(first_entity.id) == ()
+        assert reopened.get_confirmed_identity_group(first_entity.id) == (
+            first_entity.id,
+            second_entity.id,
+        )
+        assert reopened.list_connections(first.id)[0].basis == "confirmed_identity"
+
+
+def test_identity_operations_validate_entities_and_direct_edges(tmp_path: Path) -> None:
+    source = memory()
+    result = extraction(source)
+    first_entity = result.entities[0]
+    second_entity = Entity(
+        id=uid(900), display_name="Robin", entity_type=EntityType.PERSON
+    )
+    result = result.model_copy(update={"entities": (*result.entities, second_entity)})
+
+    with MemoryStore(tmp_path / "memory.sqlite3") as store:
+        store.save_memory(source)
+        store.save_extraction(result)
+        with pytest.raises(MissingEntityError, match="entity does not exist"):
+            store.list_entity_match_candidates(uid(999))
+        with pytest.raises(MissingEntityError, match="entity does not exist"):
+            store.confirm_entity_identity(first_entity.id, uid(999))
+        with pytest.raises(ValueError, match="two different entities"):
+            store.confirm_entity_identity(first_entity.id, first_entity.id)
+
+        store.confirm_entity_identity(first_entity.id, second_entity.id)
+        with pytest.raises(DuplicateRecordError, match="already exists"):
+            store.confirm_entity_identity(second_entity.id, first_entity.id)
+        with pytest.raises(MissingIdentityConfirmationError, match="does not exist"):
+            store.revoke_entity_identity(first_entity.id, uid(999))
+
+
+def test_cross_type_confirmation_is_rejected_without_creating_an_edge(
+    tmp_path: Path,
+) -> None:
+    source = memory()
+    result = extraction(source)
+    person = result.entities[0]
+    place = result.entities[1]
+
+    with MemoryStore(tmp_path / "memory.sqlite3") as store:
+        store.save_memory(source)
+        store.save_extraction(result)
+
+        with pytest.raises(
+            InvalidIdentityConfirmationError, match="matching entity types"
+        ):
+            store.confirm_entity_identity(person.id, place.id)
+
+        assert store.get_confirmed_identity_group(person.id) == (person.id,)
+        assert store.get_confirmed_identity_group(place.id) == (place.id,)
+        with pytest.raises(MissingIdentityConfirmationError, match="does not exist"):
+            store.revoke_entity_identity(person.id, place.id)
+
+
+def test_identity_database_errors_are_sanitized(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    store.close()
+
+    with pytest.raises(DatabaseError, match="confirming entity identity failed"):
+        store.confirm_entity_identity(uid(1), uid(2))
+    with pytest.raises(DatabaseError, match="revoking entity identity failed"):
+        store.revoke_entity_identity(uid(1), uid(2))
+
+
+def test_version_one_database_is_migrated_without_changing_snapshots(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "memory.sqlite3"
+    source = memory()
+    original = extraction(source)
+    with MemoryStore(database) as store:
+        store.save_memory(source)
+        store.save_extraction(original)
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE entity_identity_confirmations")
+        connection.execute("UPDATE schema_info SET version = 1")
+        connection.execute("PRAGMA user_version = 1")
+
+    with MemoryStore(database) as migrated:
+        assert migrated.schema_version == 2
+        assert migrated.get_extraction(source.id) == original
+        assert migrated.get_confirmed_identity_group(original.entities[0].id) == (
+            original.entities[0].id,
+        )
 
 
 def test_conflicting_data_for_a_shared_entity_id_is_rejected(tmp_path: Path) -> None:
@@ -383,7 +618,7 @@ def test_timeline_sorts_exact_instants_and_separates_ambiguous_events(
 def test_future_schema_version_is_rejected(tmp_path: Path) -> None:
     database = tmp_path / "future.sqlite3"
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 3")
 
     with pytest.raises(UnsupportedSchemaVersionError, match="newer than supported"):
         MemoryStore(database)

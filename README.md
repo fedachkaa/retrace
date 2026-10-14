@@ -8,9 +8,10 @@ tool.
 
 This repository currently implements a minimal FastAPI service, an importable
 memory-engine package, a local Ollama-backed extraction pipeline, and development
-tooling. The memory engine also includes local SQLite persistence and deterministic
-memory linking. A frontend, the Flutter app, and the local companion service are
-planned but not implemented.
+tooling. The memory engine also includes local SQLite persistence, advisory entity-match
+candidates, explicit identity confirmations, and deterministic memory linking. A
+frontend, the Flutter app, and the local companion service are planned but not
+implemented.
 
 ## Monorepo structure
 

@@ -25,7 +25,7 @@ from retrace_memory.models import (
     validate_source_reference,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StoreError(RuntimeError):
@@ -33,6 +33,18 @@ class StoreError(RuntimeError):
 
 
 class MissingMemoryError(StoreError):
+    pass
+
+
+class MissingEntityError(StoreError):
+    pass
+
+
+class MissingIdentityConfirmationError(StoreError):
+    pass
+
+
+class InvalidIdentityConfirmationError(StoreError):
     pass
 
 
@@ -52,13 +64,33 @@ class UnsupportedSchemaVersionError(StoreError):
     pass
 
 
+class EntityMatchCandidate(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    entity_id: UUID
+    candidate_entity_id: UUID
+    entity_type: EntityType
+    normalized_names: tuple[str, ...] = Field(min_length=1)
+    memory_ids: tuple[UUID, ...] = Field(min_length=1)
+    candidate_memory_ids: tuple[UUID, ...] = Field(min_length=1)
+
+
+class MemoryConnectionExplanation(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    basis: Literal["shared_entity_id", "confirmed_identity"]
+    entity_id: UUID
+    connected_entity_id: UUID
+
+
 class MemoryConnection(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     memory_id: UUID
     connected_memory_id: UUID
-    basis: Literal["shared_entity_id"] = "shared_entity_id"
-    shared_entity_ids: tuple[UUID, ...] = Field(min_length=1)
+    basis: Literal["shared_entity_id", "confirmed_identity", "mixed"]
+    shared_entity_ids: tuple[UUID, ...] = ()
+    explanations: tuple[MemoryConnectionExplanation, ...] = Field(min_length=1)
 
 
 class TimelineEntry(BaseModel):
@@ -172,7 +204,30 @@ CREATE INDEX idx_extraction_entities_entity
 CREATE INDEX idx_events_exact_timeline
     ON events(temporal_instant, id)
     WHERE temporal_precision = 'exact';
+CREATE TABLE entity_identity_confirmations (
+    entity_id_a TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    entity_id_b TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    PRIMARY KEY (entity_id_a, entity_id_b),
+    CHECK (entity_id_a < entity_id_b)
+);
+CREATE INDEX idx_identity_confirmations_b
+    ON entity_identity_confirmations(entity_id_b, entity_id_a);
 """
+
+_MIGRATION_1_TO_2 = (
+    """
+    CREATE TABLE entity_identity_confirmations (
+        entity_id_a TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        entity_id_b TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        PRIMARY KEY (entity_id_a, entity_id_b),
+        CHECK (entity_id_a < entity_id_b)
+    )
+    """,
+    """
+    CREATE INDEX idx_identity_confirmations_b
+        ON entity_identity_confirmations(entity_id_b, entity_id_a)
+    """,
+)
 
 
 class MemoryStore:
@@ -225,6 +280,12 @@ class MemoryStore:
                     "INSERT INTO schema_info(version) VALUES (?)", (SCHEMA_VERSION,)
                 )
                 self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        elif version == 1:
+            with self._connection:
+                for statement in _MIGRATION_1_TO_2:
+                    self._connection.execute(statement)
+                self._connection.execute("UPDATE schema_info SET version = 2")
+                self._connection.execute("PRAGMA user_version = 2")
 
     def save_memory(self, memory: Memory) -> None:
         try:
@@ -316,31 +377,233 @@ class MemoryStore:
 
     def list_connections(self, memory_id: UUID) -> tuple[MemoryConnection, ...]:
         self.get_memory(memory_id)
+        current_entity_ids = self._entity_ids_for_memory(memory_id)
+        grouped: dict[UUID, set[tuple[str, UUID, UUID]]] = {}
+        for entity_id in current_entity_ids:
+            confirmed_ids = set(self.get_confirmed_identity_group(entity_id))
+            placeholders = ", ".join("?" for _ in confirmed_ids)
+            rows = self._connection.execute(
+                f"""
+                SELECT memory_id, entity_id
+                FROM extraction_entities
+                WHERE entity_id IN ({placeholders}) AND memory_id <> ?
+                ORDER BY memory_id, entity_id
+                """,
+                (*map(str, confirmed_ids), str(memory_id)),
+            ).fetchall()
+            for row in rows:
+                connected_memory_id = UUID(row["memory_id"])
+                connected_entity_id = UUID(row["entity_id"])
+                basis = (
+                    "shared_entity_id"
+                    if connected_entity_id == entity_id
+                    else "confirmed_identity"
+                )
+                grouped.setdefault(connected_memory_id, set()).add(
+                    (basis, entity_id, connected_entity_id)
+                )
+        return tuple(
+            self._build_memory_connection(memory_id, connected_id, explanations)
+            for connected_id, explanations in sorted(grouped.items())
+        )
+
+    def list_entity_match_candidates(
+        self, entity_id: UUID
+    ) -> tuple[EntityMatchCandidate, ...]:
+        entity = self._get_stored_entity(entity_id)
+        source_memory_ids = self._memory_ids_for_entity(entity_id)
+        source_names = self._normalized_entity_names(entity)
+        confirmed_ids = set(self.get_confirmed_identity_group(entity_id))
+        rows = self._connection.execute(
+            "SELECT * FROM entities WHERE entity_type = ? AND id <> ? ORDER BY id",
+            (entity.entity_type.value, str(entity_id)),
+        ).fetchall()
+        candidates: list[EntityMatchCandidate] = []
+        for row in rows:
+            candidate = self._entity_from_row(row)
+            if candidate.id in confirmed_ids:
+                continue
+            normalized_names = tuple(
+                sorted(source_names & self._normalized_entity_names(candidate))
+            )
+            if not normalized_names:
+                continue
+            candidate_memory_ids = self._memory_ids_for_entity(candidate.id)
+            if not any(
+                source_id != candidate_id
+                for source_id in source_memory_ids
+                for candidate_id in candidate_memory_ids
+            ):
+                continue
+            candidates.append(
+                EntityMatchCandidate(
+                    entity_id=entity_id,
+                    candidate_entity_id=candidate.id,
+                    entity_type=entity.entity_type,
+                    normalized_names=normalized_names,
+                    memory_ids=source_memory_ids,
+                    candidate_memory_ids=candidate_memory_ids,
+                )
+            )
+        return tuple(candidates)
+
+    def confirm_entity_identity(self, entity_id_a: UUID, entity_id_b: UUID) -> None:
+        entity_id_a, entity_id_b = self._ordered_distinct_entity_ids(
+            entity_id_a, entity_id_b
+        )
+        try:
+            entity_a = self._get_stored_entity(entity_id_a)
+            entity_b = self._get_stored_entity(entity_id_b)
+            if entity_a.entity_type is not entity_b.entity_type:
+                raise InvalidIdentityConfirmationError(
+                    "identity confirmation requires matching entity types"
+                )
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO entity_identity_confirmations(entity_id_a, entity_id_b)
+                    VALUES (?, ?)
+                    """,
+                    (str(entity_id_a), str(entity_id_b)),
+                )
+        except StoreError:
+            raise
+        except sqlite3.IntegrityError as error:
+            raise DuplicateRecordError(
+                "identity confirmation already exists"
+            ) from error
+        except sqlite3.Error as error:
+            raise DatabaseError("confirming entity identity failed") from error
+
+    def revoke_entity_identity(self, entity_id_a: UUID, entity_id_b: UUID) -> None:
+        entity_id_a, entity_id_b = self._ordered_distinct_entity_ids(
+            entity_id_a, entity_id_b
+        )
+        try:
+            with self._connection:
+                cursor = self._connection.execute(
+                    """
+                    DELETE FROM entity_identity_confirmations
+                    WHERE entity_id_a = ? AND entity_id_b = ?
+                    """,
+                    (str(entity_id_a), str(entity_id_b)),
+                )
+                if cursor.rowcount == 0:
+                    raise MissingIdentityConfirmationError(
+                        "identity confirmation does not exist"
+                    )
+        except StoreError:
+            raise
+        except sqlite3.Error as error:
+            raise DatabaseError("revoking entity identity failed") from error
+
+    def get_confirmed_identity_group(self, entity_id: UUID) -> tuple[UUID, ...]:
+        self._get_stored_entity(entity_id)
         rows = self._connection.execute(
             """
-            SELECT other.memory_id AS connected_memory_id, current.entity_id
-            FROM extraction_entities AS current
-            JOIN extraction_entities AS other
-              ON other.entity_id = current.entity_id
-             AND other.memory_id <> current.memory_id
-            WHERE current.memory_id = ?
-            ORDER BY other.memory_id, current.entity_id
+            WITH RECURSIVE identity_group(entity_id) AS (
+                VALUES (?)
+                UNION
+                SELECT CASE
+                    WHEN confirmation.entity_id_a = identity_group.entity_id
+                    THEN confirmation.entity_id_b
+                    ELSE confirmation.entity_id_a
+                END
+                FROM entity_identity_confirmations AS confirmation
+                JOIN identity_group
+                  ON confirmation.entity_id_a = identity_group.entity_id
+                  OR confirmation.entity_id_b = identity_group.entity_id
+            )
+            SELECT entity_id FROM identity_group ORDER BY entity_id
+            """,
+            (str(entity_id),),
+        ).fetchall()
+        return tuple(UUID(row["entity_id"]) for row in rows)
+
+    def _build_memory_connection(
+        self,
+        memory_id: UUID,
+        connected_memory_id: UUID,
+        explanation_values: set[tuple[str, UUID, UUID]],
+    ) -> MemoryConnection:
+        explanations = tuple(
+            MemoryConnectionExplanation(
+                basis=basis,
+                entity_id=entity_id,
+                connected_entity_id=connected_entity_id,
+            )
+            for basis, entity_id, connected_entity_id in sorted(explanation_values)
+        )
+        bases = {explanation.basis for explanation in explanations}
+        basis = next(iter(bases)) if len(bases) == 1 else "mixed"
+        shared_entity_ids = tuple(
+            sorted(
+                {
+                    explanation.entity_id
+                    for explanation in explanations
+                    if explanation.basis == "shared_entity_id"
+                }
+            )
+        )
+        return MemoryConnection(
+            memory_id=memory_id,
+            connected_memory_id=connected_memory_id,
+            basis=basis,
+            shared_entity_ids=shared_entity_ids,
+            explanations=explanations,
+        )
+
+    def _get_stored_entity(self, entity_id: UUID) -> Entity:
+        row = self._connection.execute(
+            "SELECT * FROM entities WHERE id = ?", (str(entity_id),)
+        ).fetchone()
+        if row is None:
+            raise MissingEntityError("entity does not exist")
+        return self._entity_from_row(row)
+
+    @staticmethod
+    def _entity_from_row(row: sqlite3.Row) -> Entity:
+        return Entity(
+            id=row["id"],
+            display_name=row["display_name"],
+            entity_type=EntityType(row["entity_type"]),
+            aliases=tuple(json.loads(row["aliases_json"])),
+        )
+
+    @staticmethod
+    def _normalized_entity_names(entity: Entity) -> set[str]:
+        return {
+            " ".join(name.casefold().split())
+            for name in (entity.display_name, *entity.aliases)
+        }
+
+    def _memory_ids_for_entity(self, entity_id: UUID) -> tuple[UUID, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT memory_id FROM extraction_entities
+            WHERE entity_id = ? ORDER BY memory_id
+            """,
+            (str(entity_id),),
+        ).fetchall()
+        return tuple(UUID(row["memory_id"]) for row in rows)
+
+    def _entity_ids_for_memory(self, memory_id: UUID) -> tuple[UUID, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT entity_id FROM extraction_entities
+            WHERE memory_id = ? ORDER BY entity_id
             """,
             (str(memory_id),),
         ).fetchall()
-        grouped: dict[UUID, list[UUID]] = {}
-        for row in rows:
-            grouped.setdefault(UUID(row["connected_memory_id"]), []).append(
-                UUID(row["entity_id"])
-            )
-        return tuple(
-            MemoryConnection(
-                memory_id=memory_id,
-                connected_memory_id=connected_id,
-                shared_entity_ids=tuple(entity_ids),
-            )
-            for connected_id, entity_ids in grouped.items()
-        )
+        return tuple(UUID(row["entity_id"]) for row in rows)
+
+    @staticmethod
+    def _ordered_distinct_entity_ids(
+        entity_id_a: UUID, entity_id_b: UUID
+    ) -> tuple[UUID, UUID]:
+        if entity_id_a == entity_id_b:
+            raise ValueError("identity confirmation requires two different entities")
+        return tuple(sorted((entity_id_a, entity_id_b)))
 
     def get_timeline(self) -> TimelineResult:
         rows = self._connection.execute(
