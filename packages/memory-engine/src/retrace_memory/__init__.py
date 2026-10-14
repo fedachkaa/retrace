@@ -7,6 +7,7 @@ from retrace_memory.models import (
     EntityType,
     Event,
     EventStatus,
+    EvidenceScope,
     InformationOrigin,
     Memory,
     MemorySourceType,
@@ -22,6 +23,7 @@ __version__ = "0.1.0"
 __all__ = [
     "Certainty",
     "Claim",
+    "EvidenceScope",
     "Entity",
     "EntityType",
     "Event",

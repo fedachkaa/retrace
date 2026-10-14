@@ -41,20 +41,37 @@ not communicate certainty. It is not a probability and must not be presented as 
 
 ## Provenance and evidence validation
 
-`SourceReference` offsets use zero-based, end-exclusive Python string indices. For
-example, offsets `0` and `4` select `text[0:4]`. Both offsets must be supplied together,
-the end must be greater than the start, and a supplied quote must have the same
-character length as the range.
+Every `SourceReference` has an explicit scope:
+
+- `whole_memory` references the memory as a whole and forbids offsets and a quote.
+- `text_span` requires a start offset, end offset, and quote.
+
+Text-span offsets use zero-based, end-exclusive Python string indices. For example,
+offsets `0` and `4` select `text[0:4]`. The end must be greater than the start, and the
+quote must have the same character length as the range. This prevents a missing quote
+or half-specified range from being mistaken for intentional whole-memory evidence.
 
 These structural checks do not require storage access. When the source `Memory` is
 available, call `validate_source_reference(reference, memory)` to verify:
 
 - the referenced memory ID matches;
 - offsets remain within the original content;
-- a quote matches the selected text; or
-- a quote without offsets occurs somewhere in the content.
+- a text-span quote matches the selected text.
 
 This separation keeps the models reusable without hiding persistence or lookup work.
+
+### Validated construction and copying
+
+Pydantic's `model_copy(update=...)` does not validate update data. Frozen models prevent
+attribute assignment, but they do not make an updated copy trustworthy. Code must not
+treat a `model_copy(update=...)` result as validated extraction output.
+
+Evidence and extraction-result models use `revalidate_instances="always"`. Validate a
+copied object with its model class before trusting it, for example
+`Claim.model_validate(candidate)`. Nested source references are also revalidated when a
+claim, event, or relationship is constructed, so an invalid copied reference cannot be
+silently accepted as evidence. Prefer ordinary validated construction whenever data
+changes.
 
 ## Temporal ambiguity
 
@@ -71,6 +88,7 @@ from datetime import UTC, datetime
 
 from retrace_memory import (
     Claim,
+    EvidenceScope,
     InformationOrigin,
     Memory,
     MemorySourceType,
@@ -84,6 +102,7 @@ memory = Memory(
 )
 reference = SourceReference(
     memory_id=memory.id,
+    scope=EvidenceScope.TEXT_SPAN,
     start_offset=14,
     end_offset=32,
     quote="may move to Berlin",

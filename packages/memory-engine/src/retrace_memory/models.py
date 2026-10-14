@@ -54,6 +54,11 @@ class TemporalPrecision(StrEnum):
     UNKNOWN = "unknown"
 
 
+class EvidenceScope(StrEnum):
+    WHOLE_MEMORY = "whole_memory"
+    TEXT_SPAN = "text_span"
+
+
 class Memory(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -122,26 +127,34 @@ class Entity(BaseModel):
 
 
 class SourceReference(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
 
     memory_id: UUID
+    scope: EvidenceScope
     start_offset: int | None = Field(default=None, ge=0)
     end_offset: int | None = Field(default=None, ge=0)
     quote: str | None = None
 
     @model_validator(mode="after")
-    def validate_offsets(self) -> Self:
-        if (self.start_offset is None) != (self.end_offset is None):
-            raise ValueError("evidence offsets must be provided together")
-        if self.start_offset is not None and self.end_offset <= self.start_offset:
+    def validate_scope(self) -> Self:
+        if self.scope is EvidenceScope.WHOLE_MEMORY:
+            if any(
+                value is not None
+                for value in (self.start_offset, self.end_offset, self.quote)
+            ):
+                raise ValueError("whole-memory evidence cannot contain span details")
+            return self
+        if None in (self.start_offset, self.end_offset, self.quote):
+            raise ValueError("text-span evidence requires offsets and a quote")
+        if self.end_offset <= self.start_offset:
             raise ValueError("evidence end offset must be greater than start offset")
-        if self.quote is not None and not self.quote:
+        if not self.quote:
             raise ValueError("evidence quote must not be empty")
-        if (
-            self.quote is not None
-            and self.start_offset is not None
-            and len(self.quote) != self.end_offset - self.start_offset
-        ):
+        if len(self.quote) != self.end_offset - self.start_offset:
             raise ValueError("evidence quote length must match its offset range")
         return self
 
@@ -183,7 +196,11 @@ class TemporalContext(BaseModel):
 
 
 class Claim(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
 
     id: UUID = Field(default_factory=uuid4)
     statement: str = Field(min_length=1)
@@ -203,7 +220,11 @@ class Claim(BaseModel):
 
 
 class Event(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
 
     id: UUID = Field(default_factory=uuid4)
     title: str = Field(min_length=1)
@@ -228,7 +249,11 @@ class Event(BaseModel):
 
 
 class Relationship(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
 
     id: UUID = Field(default_factory=uuid4)
     source_entity_id: UUID
@@ -253,17 +278,12 @@ class Relationship(BaseModel):
 
 
 def validate_source_reference(reference: SourceReference, memory: Memory) -> None:
+    reference = SourceReference.model_validate(reference)
     if reference.memory_id != memory.id:
         raise ValueError("evidence references a different memory")
-    if reference.start_offset is not None:
-        if reference.end_offset > len(memory.content):
-            raise ValueError("evidence offsets exceed memory content")
-        if (
-            reference.quote is not None
-            and memory.content[reference.start_offset : reference.end_offset]
-            != reference.quote
-        ):
-            raise ValueError("evidence quote does not match memory content at offsets")
+    if reference.scope is EvidenceScope.WHOLE_MEMORY:
         return
-    if reference.quote is not None and reference.quote not in memory.content:
-        raise ValueError("evidence quote does not occur in memory content")
+    if reference.end_offset > len(memory.content):
+        raise ValueError("evidence offsets exceed memory content")
+    if memory.content[reference.start_offset : reference.end_offset] != reference.quote:
+        raise ValueError("evidence quote does not match memory content at offsets")

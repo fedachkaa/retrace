@@ -11,6 +11,7 @@ from retrace_memory import (
     EntityType,
     Event,
     EventStatus,
+    EvidenceScope,
     InformationOrigin,
     Memory,
     MemorySourceType,
@@ -39,6 +40,7 @@ def evidence(source: Memory, quote: str = "Anna") -> SourceReference:
     start = source.content.index(quote)
     return SourceReference(
         memory_id=source.id,
+        scope=EvidenceScope.TEXT_SPAN,
         start_offset=start,
         end_offset=start + len(quote),
         quote=quote,
@@ -229,7 +231,12 @@ def test_relationship_requires_evidence_and_distinct_entities() -> None:
             source_entity_id=source_id,
             target_entity_id=source_id,
             relationship_type="colleague",
-            evidence=(SourceReference(memory_id=uuid4()),),
+            evidence=(
+                SourceReference(
+                    memory_id=uuid4(),
+                    scope=EvidenceScope.WHOLE_MEMORY,
+                ),
+            ),
             origin=InformationOrigin.USER_PROVIDED,
         )
 
@@ -254,6 +261,8 @@ def test_relationship_records_whether_it_was_inferred() -> None:
         (None, 4, None),
         (4, 4, None),
         (5, 4, None),
+        (4, 4, ""),
+        (0, 1, ""),
         (-1, 4, None),
         (0, -1, None),
         (0, 4, "too long"),
@@ -268,6 +277,7 @@ def test_source_reference_rejects_inconsistent_ranges(
     with pytest.raises(ValidationError):
         SourceReference(
             memory_id=uuid4(),
+            scope=EvidenceScope.TEXT_SPAN,
             start_offset=start,
             end_offset=end,
             quote=quote,
@@ -293,6 +303,7 @@ def test_source_reference_validates_quote_against_memory() -> None:
         validate_source_reference(
             SourceReference(
                 memory_id=source.id,
+                scope=EvidenceScope.TEXT_SPAN,
                 start_offset=len(source.content),
                 end_offset=len(source.content) + 1,
                 quote="x",
@@ -301,18 +312,75 @@ def test_source_reference_validates_quote_against_memory() -> None:
         )
 
 
-def test_source_reference_without_offsets_requires_quote_to_occur() -> None:
+def test_whole_memory_reference_is_explicit_and_has_no_span_details() -> None:
     source = memory()
-    validate_source_reference(
-        SourceReference(memory_id=source.id, quote="Berlin"),
-        source,
+    reference = SourceReference(
+        memory_id=source.id,
+        scope=EvidenceScope.WHOLE_MEMORY,
     )
 
-    with pytest.raises(ValueError, match="does not occur"):
-        validate_source_reference(
-            SourceReference(memory_id=source.id, quote="Paris"),
-            source,
+    validate_source_reference(reference, source)
+
+    with pytest.raises(ValidationError, match="cannot contain span details"):
+        SourceReference(
+            memory_id=source.id,
+            scope=EvidenceScope.WHOLE_MEMORY,
+            quote="Berlin",
         )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {},
+        {"start_offset": 0, "end_offset": 4},
+        {"start_offset": 0, "quote": "Anna"},
+        {"end_offset": 4, "quote": "Anna"},
+    ],
+)
+def test_text_span_reference_requires_offsets_and_quote(
+    values: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="requires offsets and a quote"):
+        SourceReference(
+            memory_id=uuid4(),
+            scope=EvidenceScope.TEXT_SPAN,
+            **values,
+        )
+
+
+def test_reference_requires_an_explicit_scope() -> None:
+    with pytest.raises(ValidationError, match="scope"):
+        SourceReference(memory_id=uuid4())
+
+
+def test_unvalidated_reference_copy_is_rejected_at_trust_boundaries() -> None:
+    source = memory()
+    valid_reference = evidence(source)
+    invalid_reference = valid_reference.model_copy(update={"quote": "wrong"})
+
+    with pytest.raises(ValidationError, match="quote length"):
+        SourceReference.model_validate(invalid_reference)
+
+    with pytest.raises(ValidationError, match="quote length"):
+        Claim(
+            statement="Anna was mentioned.",
+            evidence=(invalid_reference,),
+            origin=InformationOrigin.AI_INFERRED,
+        )
+
+
+def test_unvalidated_extraction_copy_requires_explicit_revalidation() -> None:
+    source = memory()
+    claim = Claim(
+        statement="Anna was mentioned.",
+        evidence=(evidence(source),),
+        origin=InformationOrigin.AI_INFERRED,
+    )
+    invalid_claim = claim.model_copy(update={"statement": " "})
+
+    with pytest.raises(ValidationError, match="claim statement"):
+        Claim.model_validate(invalid_claim)
 
 
 @pytest.mark.parametrize(
@@ -401,7 +469,10 @@ def test_models_reject_invalid_enum_values(
 
 def test_models_reject_malformed_uuids() -> None:
     with pytest.raises(ValidationError, match="UUID"):
-        SourceReference(memory_id="not-a-uuid")
+        SourceReference(
+            memory_id="not-a-uuid",
+            scope=EvidenceScope.WHOLE_MEMORY,
+        )
 
 
 def test_nested_claim_round_trips_through_json() -> None:
@@ -430,7 +501,12 @@ def test_nested_claim_round_trips_through_json() -> None:
             Claim,
             {
                 "statement": " ",
-                "evidence": (SourceReference(memory_id=uuid4()),),
+                "evidence": (
+                    SourceReference(
+                        memory_id=uuid4(),
+                        scope=EvidenceScope.WHOLE_MEMORY,
+                    ),
+                ),
                 "origin": InformationOrigin.AI_INFERRED,
             },
             "claim statement",
@@ -439,7 +515,12 @@ def test_nested_claim_round_trips_through_json() -> None:
             Event,
             {
                 "title": " ",
-                "evidence": (SourceReference(memory_id=uuid4()),),
+                "evidence": (
+                    SourceReference(
+                        memory_id=uuid4(),
+                        scope=EvidenceScope.WHOLE_MEMORY,
+                    ),
+                ),
                 "status": EventStatus.UNCERTAIN,
                 "origin": InformationOrigin.AI_INFERRED,
             },
@@ -451,7 +532,12 @@ def test_nested_claim_round_trips_through_json() -> None:
                 "source_entity_id": uuid4(),
                 "target_entity_id": uuid4(),
                 "relationship_type": " ",
-                "evidence": (SourceReference(memory_id=uuid4()),),
+                "evidence": (
+                    SourceReference(
+                        memory_id=uuid4(),
+                        scope=EvidenceScope.WHOLE_MEMORY,
+                    ),
+                ),
                 "origin": InformationOrigin.AI_INFERRED,
             },
             "relationship type",
