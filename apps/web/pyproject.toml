@@ -1,0 +1,18 @@
+[project]
+name = "retrace-web"
+version = "0.1.0"
+description = "FastAPI web application for RETRACE"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115.0,<1",
+    "pydantic>=2.10.0,<3",
+    "retrace-memory",
+    "uvicorn[standard]>=0.34.0,<1",
+]
+
+[tool.uv.sources]
+retrace-memory = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

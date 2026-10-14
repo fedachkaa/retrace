@@ -1,0 +1,53 @@
+[project]
+name = "retrace-workspace"
+version = "0.1.0"
+description = "Development workspace for RETRACE"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1,<0.29",
+    "pytest>=8.3.5,<9",
+    "pytest-cov>=6.0.0,<7",
+    "ruff>=0.11.0,<0.12",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "apps/web",
+    "packages/memory-engine",
+]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib --cov=retrace_memory --cov=retrace_web --cov-report=term-missing --cov-fail-under=100"
+testpaths = [
+    "apps/web/tests",
+    "packages/memory-engine/tests",
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "retrace_memory",
+    "retrace_web",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = [
+    "apps/web/src",
+    "packages/memory-engine/src",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
