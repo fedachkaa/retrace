@@ -6,9 +6,10 @@ extract structured information, review evidence-based connections, identify pote
 inconsistencies, and explore timelines. RETRACE is not a lie detector or surveillance
 tool.
 
-This repository currently implements only a minimal FastAPI service, an importable
-memory-engine package, and development tooling. AI features, persistence, a frontend,
-the Flutter app, and the local companion service are planned but not implemented.
+This repository currently implements a minimal FastAPI service, an importable
+memory-engine package, a local Ollama-backed extraction pipeline, and development
+tooling. Persistence, a frontend, the Flutter app, and the local companion service
+are planned but not implemented.
 
 ## Monorepo structure
 
@@ -27,7 +28,8 @@ Both Python projects use a `src/` layout and are managed from the root uv worksp
 - [uv](https://docs.astral.sh/uv/)
 - Python 3.12 (uv can install the required interpreter)
 
-No database, model server, or external API is required.
+No database or external API is required. Ollama is optional and is needed only for
+the local extraction demo.
 
 ## Installation
 
@@ -75,6 +77,7 @@ uv run ruff format .
 ## Privacy direction
 
 RETRACE is designed toward local-first processing so personal memories can remain
-under the user's control. Future AI-generated claims and connections should retain
-their supporting evidence and remain reviewable by the user. The current foundation
-does not process or store personal data.
+under the user's control. AI-generated claims and events retain exact supporting
+evidence and remain reviewable by the user. See
+[Local AI memory extraction](docs/local-ai-extraction.md) for Ollama setup, the demo,
+privacy boundaries, and limitations.
