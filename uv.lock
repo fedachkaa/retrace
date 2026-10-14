@@ -330,11 +330,15 @@ name = "retrace-memory"
 version = "0.1.0"
 source = { editable = "packages/memory-engine" }
 dependencies = [
+    { name = "httpx" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.10.0,<3" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1,<0.29" },
+    { name = "pydantic", specifier = ">=2.10.0,<3" },
+]
 
 [[package]]
 name = "retrace-web"

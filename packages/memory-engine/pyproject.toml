@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Reusable memory engine for RETRACE"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "httpx>=0.28.1,<0.29",
     "pydantic>=2.10.0,<3",
 ]
 
