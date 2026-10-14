@@ -6,11 +6,13 @@ RETRACE is a uv-managed Python monorepo targeting Python 3.12. It currently cont
 two independently packaged workspace members:
 
 - `apps/web` exposes a minimal FastAPI application and a health endpoint.
-- `packages/memory-engine` exposes the importable `retrace_memory` package.
+- `packages/memory-engine` exposes immutable Pydantic domain models through the
+  importable `retrace_memory` package.
 
 The web application depends on the memory engine through an explicit uv workspace
-dependency. This verifies the package boundary without adding business logic. There
-is no database, model runtime, external API, authentication, or user interface.
+dependency. The memory engine now models source memories, entities, claims, events,
+relationships, evidence references, and temporal ambiguity. There is no database,
+model runtime, external API, authentication, or user interface.
 
 ## Planned boundaries
 
@@ -22,10 +24,10 @@ to be reusable should live in the memory engine.
 
 ### Memory engine
 
-The memory engine is intended to own reusable processing for memories, including
-future structured extraction, evidence-backed relationships, inconsistency signals,
-and timeline construction. None of those capabilities are implemented yet. The
-engine should remain independent of FastAPI so other clients can reuse it.
+The memory engine owns reusable memory-domain models and will eventually own structured
+extraction, evidence-backed relationships, inconsistency signals, and timeline
+construction. Only the domain models and source-reference validation are implemented.
+The engine remains independent of FastAPI so other clients can reuse it.
 
 ### Flutter application
 
