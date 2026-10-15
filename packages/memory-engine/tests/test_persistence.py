@@ -629,6 +629,32 @@ def test_initialization_database_errors_are_sanitized(tmp_path: Path) -> None:
         MemoryStore(tmp_path)
 
 
+def test_failed_initialization_rolls_back_and_can_be_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "memory.sqlite3"
+    schema = persistence._SCHEMA
+    monkeypatch.setattr(
+        persistence,
+        "_SCHEMA",
+        f"{schema}\nINSERT INTO table_that_does_not_exist VALUES (1);",
+    )
+
+    with pytest.raises(DatabaseError, match="initialization failed"):
+        MemoryStore(database)
+
+    with sqlite3.connect(database) as connection:
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        assert tables == []
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+
+    monkeypatch.setattr(persistence, "_SCHEMA", schema)
+    with MemoryStore(database) as store:
+        assert store.schema_version == persistence.SCHEMA_VERSION
+
+
 def test_store_rejects_connections_without_foreign_key_enforcement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

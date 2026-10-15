@@ -274,12 +274,19 @@ class MemoryStore:
                 f"{SCHEMA_VERSION}"
             )
         if version == 0:
-            with self._connection:
-                self._connection.executescript(_SCHEMA)
-                self._connection.execute(
-                    "INSERT INTO schema_info(version) VALUES (?)", (SCHEMA_VERSION,)
+            try:
+                self._connection.executescript(
+                    f"""
+                    BEGIN IMMEDIATE;
+                    {_SCHEMA}
+                    INSERT INTO schema_info(version) VALUES ({SCHEMA_VERSION});
+                    PRAGMA user_version = {SCHEMA_VERSION};
+                    COMMIT;
+                    """
                 )
-                self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            except sqlite3.Error:
+                self._connection.rollback()
+                raise
         elif version == 1:
             with self._connection:
                 for statement in _MIGRATION_1_TO_2:

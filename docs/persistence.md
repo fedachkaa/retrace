@@ -78,7 +78,11 @@ transaction, so any failure rolls back the complete snapshot.
 Reprocessing is explicit through `replace_extraction()`. It validates the complete new
 result first, then atomically removes the old snapshot and inserts the replacement.
 Failure restores the old snapshot. Entities no longer referenced by any extraction are
-removed after a successful replacement.
+removed after a successful replacement. Because identity confirmations reference those
+entities with cascading foreign keys, removing an entity that is no longer referenced
+by any snapshot also removes its user-confirmed identity edges. Stable identity records
+and identity preservation across re-extraction are outside the current persistence
+model.
 
 ## Evidence integrity
 
